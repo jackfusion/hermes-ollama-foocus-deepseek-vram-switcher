@@ -161,6 +161,8 @@ def generate_image_sync(prompt, image_b64=None, cn_type="ImagePrompt"):
         data = response.json()
         
         img_url = data[0]['url']
+        # Fix container routing: replace 127.0.0.1 / localhost with internal fooocus container hostname
+        img_url = img_url.replace("127.0.0.1:7865", "fooocus:7865").replace("localhost:7865", "fooocus:7865")
         
         img_response = requests.get(img_url, timeout=30)
         img_response.raise_for_status()
