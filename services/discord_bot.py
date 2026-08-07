@@ -20,6 +20,7 @@ DISCORD_TOKEN = os.getenv("YOUR_DISCORD_BOT_TOKEN_HERMES_CREATIVE_DIRECTOR")
 
 # The internal routing must use the Debian Host IP!
 FOOOCUS_API_URL = os.getenv("FOOOCUS_API_URL", "http://fooocus:7865/v1/generation/text-to-image")
+FOOOCUS_VARY_URL = os.getenv("FOOOCUS_VARY_URL", "http://fooocus:7865/v2/generation/image-upscale-vary")
 FOOOCUS_INPAINT_URL = os.getenv("FOOOCUS_INPAINT_URL", "http://fooocus:7865/v2/generation/image-inpaint-outpaint")
 FOOOCUS_HEALTH_URL = os.getenv("FOOOCUS_HEALTH_URL", "http://fooocus:7865/")
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://10.0.2.201:11434/api/generate")
@@ -149,16 +150,28 @@ async def extract_image_attachment(ctx):
 def generate_image_sync(prompt, image_b64=None, cn_type="CPDS"):
     """Sends a JSON payload to the Fooocus API and downloads the rendered image."""
     try:
-        payload = {
-            "prompt": prompt if prompt else "High quality detailed image",
-            "performance_selection": "Speed",
-            "aspect_ratio": "1152×896",
-            "require_base64": False,
-            "async_process": False
-        }
-        
-        if image_b64:
-            if cn_type == "ImagePrompt":
+        if image_b64 and cn_type != "ImagePrompt":
+            # Image Edit / Vary (Subtle) Mode: Uses Fooocus Vary (Subtle) engine to keep original subject 1:1
+            payload = {
+                "input_image": image_b64,
+                "prompt": prompt if prompt else "clean high quality background",
+                "uov_method": "Vary (Subtle)",
+                "performance_selection": "Speed",
+                "style_selections": [],
+                "require_base64": False,
+                "async_process": False
+            }
+            target_url = FOOOCUS_VARY_URL
+        else:
+            # Standard Text-to-Image / Style Transfer Mode
+            payload = {
+                "prompt": prompt if prompt else "High quality detailed image",
+                "performance_selection": "Speed",
+                "aspect_ratio": "1152×896",
+                "require_base64": False,
+                "async_process": False
+            }
+            if image_b64:
                 payload["image_prompts"] = [
                     {
                         "cn_img": f"data:image/png;base64,{image_b64}",
@@ -167,27 +180,9 @@ def generate_image_sync(prompt, image_b64=None, cn_type="CPDS"):
                         "cn_type": "ImagePrompt"
                     }
                 ]
-            else:
-                # Direct Image Editing Mode:
-                # 1. Disable Fooocus V2 prompt expansion so SDXL stays 100% faithful to original image
-                # 2. Dual ControlNet (PyraCanny Edge + CPDS Depth) for 1:1 subject retention
-                payload["style_selections"] = []
-                payload["image_prompts"] = [
-                    {
-                        "cn_img": f"data:image/png;base64,{image_b64}",
-                        "cn_stop": 0.9,
-                        "cn_weight": 1.0,
-                        "cn_type": "PyraCanny"
-                    },
-                    {
-                        "cn_img": f"data:image/png;base64,{image_b64}",
-                        "cn_stop": 0.9,
-                        "cn_weight": 1.0,
-                        "cn_type": "CPDS"
-                    }
-                ]
+            target_url = FOOOCUS_API_URL
         
-        response = requests.post(FOOOCUS_API_URL, json=payload, timeout=300)
+        response = requests.post(target_url, json=payload, timeout=300)
         response.raise_for_status()
         data = response.json()
         
