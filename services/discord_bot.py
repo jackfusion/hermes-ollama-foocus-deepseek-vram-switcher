@@ -78,7 +78,7 @@ async def swap_to_text_mode():
     )
     await process_agent.communicate()
 
-async def wait_for_engine(timeout=45):
+async def wait_for_engine(timeout=120):
     """Pings the engine until the PyTorch tensors are fully loaded into VRAM."""
     start_time = time.time()
     while time.time() - start_time < timeout:
@@ -218,7 +218,7 @@ async def imagine(ctx, *, prompt: str = ""):
         engine_ready = await wait_for_engine()
         
         if not engine_ready:
-            await status_msg.edit(content="❌ **Error:** Vision Engine failed to boot within 45 seconds. Check Docker logs.")
+            await status_msg.edit(content="❌ **Error:** Vision Engine failed to boot within 120 seconds. Check Docker logs.")
             return
 
         # Step 4: The Generation / Editing
