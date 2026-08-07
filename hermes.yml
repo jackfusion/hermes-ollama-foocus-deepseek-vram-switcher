@@ -1,0 +1,36 @@
+name: hermes-agent-stack
+
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest 
+    container_name: agent_hermes
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    ports:
+      - "8383:8383"
+      - "8686:8686"
+    volumes:
+      - ${DOCKER_APPDATA}/hermes_data:/opt/data
+      # The God Mode Key
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - agent_net
+    environment:
+      - DISCORD_BOT_TOKEN=${HERMES_DISCORD_TOKEN}
+      - DISCORD_ALLOWED_USERS=${DISCORD_ALLOWED_USERS}
+      - HERMES_MODEL_CONTEXT_LENGTH=65536
+      - OPENAI_BASE_URL=http://inference_ollama:11434/v1
+      - OPENAI_API_KEY=ollama
+      - MODEL=deepseek-r1:8b
+      - HERMES_DASHBOARD=1
+      - HERMES_WEB_HOST=0.0.0.0
+      - HERMES_WEB_PORT=8383
+    # We removed 'depends_on: ollama' because they are now in separate files.
+    # Hermes must start Ollama manually via the socket if it's not running.
+    command: ["gateway", "run"]
+
+networks:
+  agent_net:
+    external: true

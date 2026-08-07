@@ -1,0 +1,16 @@
+FROM python:3.11-slim
+
+# Prevent Python from buffering stdout/stderr (vital for Docker logs)
+ENV PYTHONUNBUFFERED=1
+
+# Install curl for raw Docker socket API calls
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# Install the lightweight network dependencies
+RUN pip install --no-cache-dir discord.py aiohttp requests python-dotenv
+
+# The command to launch the Discord client when the container boots
+CMD ["python", "discord_bot.py"]

@@ -1,0 +1,43 @@
+name: enterprise-fooocus-stack
+
+services:
+  fooocus:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    # THE WIDE OPEN DOOR: 7865 is now exposed to your entire local network
+    ports:
+      - "7865:7865"
+    # THE X-RAY: Forces Python to print errors instantly instead of buffering
+    environment:
+      - PYTHONUNBUFFERED=1
+    # THE MEMORY FIX: Removes the 64MB SHMEM limit and gives PyTorch unlimited IPC
+    ipc: host
+    volumes:
+      - ${DOCKER_APPDATA}/fooocus_models:/opt/Fooocus/models
+      - ${MEAGLEYS_PROJECT_DIR}/renders:/opt/Fooocus/outputs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: always
+
+  discord_bot:
+    build: 
+      context: /mnt/media/docker/compose/debian-llm/llm/services
+      dockerfile: Dockerfile.bot
+    container_name: hermes_creative_director
+    restart: unless-stopped
+    # THE EGRESS TUNNEL: Bypasses Pi-hole for Discord/Cloudflare routing
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    env_file:
+      - .env
+    volumes:
+      - /mnt/media/docker/compose/debian-llm/llm/services:/app
+      - /var/run/docker.sock:/var/run/docker.sock

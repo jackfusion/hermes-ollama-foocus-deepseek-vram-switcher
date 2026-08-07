@@ -1,0 +1,25 @@
+name: ollama-inference-stack
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: inference_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ${DOCKER_APPDATA}/ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - agent_net
+    restart: "no"
+
+# This tells Docker NOT to create a new network, but to find the one you made in Step 1
+networks:
+  agent_net:
+    external: true

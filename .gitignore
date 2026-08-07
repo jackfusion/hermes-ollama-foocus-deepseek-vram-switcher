@@ -1,0 +1,19 @@
+# Environment files
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+env/
+venv/
+ENV/
+
+# Docker volume mounts / temp files
+*.log
+*.bak
+.DS_Store
