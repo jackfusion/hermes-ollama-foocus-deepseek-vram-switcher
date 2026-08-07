@@ -172,13 +172,10 @@ def generate_image_sync(prompt, image_b64=None, cn_type="CPDS"):
                     }
                 ]
             else:
-                # Subject Retention Mode for !edit:
-                # 1. Reduced Denoising Strength (0.35) so original image pixels stay intact
-                # 2. Dual ControlNet (PyraCanny Edge + CPDS Depth) for 1:1 subject contours
-                payload["advanced_params"] = {
-                    "overwrite_vary_strength": 0.35,
-                    "inpaint_strength": 0.35
-                }
+                # Direct Image Editing Mode:
+                # 1. Disable Fooocus V2 prompt expansion so SDXL stays 100% faithful to original image
+                # 2. Dual ControlNet (PyraCanny Edge + CPDS Depth) for 1:1 subject retention
+                payload["style_selections"] = []
                 payload["image_prompts"] = [
                     {
                         "cn_img": f"data:image/png;base64,{image_b64}",
