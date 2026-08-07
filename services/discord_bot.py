@@ -135,7 +135,7 @@ async def extract_image_attachment(ctx):
 
     return None
 
-def generate_image_sync(prompt, image_b64=None, cn_type="ImagePrompt"):
+def generate_image_sync(prompt, image_b64=None, cn_type="CPDS"):
     """Sends a JSON payload to the Fooocus API (supporting optional Image Prompt/Editing) and downloads the rendered image."""
     try:
         payload = {
@@ -151,7 +151,7 @@ def generate_image_sync(prompt, image_b64=None, cn_type="ImagePrompt"):
                 {
                     "cn_img": f"data:image/png;base64,{image_b64}",
                     "cn_stop": 0.6,
-                    "cn_weight": 0.8,
+                    "cn_weight": 0.85,
                     "cn_type": cn_type
                 }
             ]
@@ -198,7 +198,7 @@ def generate_text_sync(prompt, model="deepseek-r1:8b"):
 # 🚀 THE DISCORD COMMAND
 # ==========================================
 
-@bot.command(name="imagine", aliases=["edit", "render"])
+@bot.command(name="imagine", aliases=["edit", "render", "style"])
 async def imagine(ctx, *, prompt: str = ""):
     # Step 1: Claim the request
     status_msg = await ctx.send("🔄 **VRAM Juggler:** Clearing memory and igniting Vision Engine...")
@@ -211,6 +211,9 @@ async def imagine(ctx, *, prompt: str = ""):
         if not prompt and not img_b64:
             await status_msg.edit(content="❌ **Error:** Please provide a prompt or attach an image to edit!")
             return
+
+        # Choose ControlNet type: 'CPDS' preserves exact structure/pose during !edit, 'ImagePrompt' transfers style
+        cn_type = "ImagePrompt" if ctx.invoked_with == "style" else "CPDS"
 
         # Step 2: The Hand-off
         await swap_to_vision_mode()
@@ -225,11 +228,11 @@ async def imagine(ctx, *, prompt: str = ""):
 
         # Step 4: The Generation / Editing
         if img_b64:
-            await status_msg.edit(content=f"🎨 **Editing Image:** `{prompt if prompt else 'Image Prompt'}`")
+            await status_msg.edit(content=f"🎨 **Editing Image ({cn_type} Structure Preserved):** `{prompt if prompt else 'Image Edit'}`")
         else:
             await status_msg.edit(content=f"🎨 **Rendering:** `{prompt}`")
 
-        image_result_bytes = await asyncio.to_thread(generate_image_sync, prompt, img_b64)
+        image_result_bytes = await asyncio.to_thread(generate_image_sync, prompt, img_b64, cn_type)
         
         # Step 5: The Delivery
         await ctx.send(file=discord.File(fp=image_result_bytes, filename="generation.png"))
