@@ -175,11 +175,11 @@ def create_inpaint_mask_and_image(img_bytes):
         raw_b64 = base64.b64encode(img_bytes).decode('utf-8')
         return raw_b64, None
 
-def generate_image_sync(prompt, image_b64=None, mask_b64=None, cn_type="CPDS"):
+def generate_image_sync(prompt, image_b64=None, mask_b64=None, edit_type="vary"):
     """Sends a JSON payload to the Fooocus API and downloads the rendered image."""
     try:
-        if image_b64 and mask_b64:
-            # Native Fooocus Inpainting API: Inpaints background (white mask area) while keeping subject (black mask area) 1:1
+        if image_b64 and edit_type == "inpaint" and mask_b64:
+            # Background Replacement Mode: Inpaints background (white mask) while keeping subject (black mask) 1:1
             payload = {
                 "input_image": f"data:image/png;base64,{image_b64}",
                 "input_mask": f"data:image/png;base64,{mask_b64}",
@@ -190,20 +190,21 @@ def generate_image_sync(prompt, image_b64=None, mask_b64=None, cn_type="CPDS"):
                 "async_process": False
             }
             target_url = FOOOCUS_INPAINT_URL
+
         elif image_b64:
-            # ControlNet / Vary fallback
+            # Subject Feature / Detail Editing Mode: Uses Vary (Subtle) to modify details (e.g. eye color, hats) while keeping background intact
             payload = {
                 "input_image": image_b64,
-                "prompt": prompt if prompt else "clean high quality background",
+                "prompt": prompt if prompt else "High quality detailed image",
                 "uov_method": "Vary (Subtle)",
                 "performance_selection": "Speed",
-                "style_selections": [],
                 "require_base64": False,
                 "async_process": False
             }
             target_url = FOOOCUS_VARY_URL
+
         else:
-            # Standard Text-to-Image
+            # Standard Text-to-Image Generation
             payload = {
                 "prompt": prompt if prompt else "High quality detailed image",
                 "performance_selection": "Speed",
@@ -290,19 +291,29 @@ async def imagine(ctx, *, prompt: str = ""):
     # Standard VRAM Juggler Generation/Editing
     status_msg = await ctx.send("🔄 **VRAM Juggler:** Clearing memory and igniting Vision Engine...")
     try:
-        # For image edits, generate base image + subject inpainting mask automatically
-        if img_bytes:
-            img_b64, mask_b64 = await asyncio.to_thread(create_inpaint_mask_and_image, img_bytes)
-        else:
-            img_b64, mask_b64 = None, None
-
         # Clean prompt text of user filename references (e.g. 'for image generation.png')
         clean_prompt = re.sub(r'for image \S+|image \S+\.png|\S+\.png', '', prompt, flags=re.IGNORECASE).strip()
         if not clean_prompt and prompt:
             clean_prompt = prompt
 
-        # Choose ControlNet type: 'CPDS' preserves exact structure/pose during !edit, 'ImagePrompt' transfers style
-        cn_type = "ImagePrompt" if ctx.invoked_with == "style" else "CPDS"
+        # Determine edit type: Background edit vs Subject Feature edit (e.g. eye color, hat)
+        bg_keywords = ["background", "bg", "environment", "setting", "scene", "behind"]
+        is_bg_edit = any(kw in clean_prompt.lower() for kw in bg_keywords)
+
+        if img_bytes:
+            if is_bg_edit:
+                edit_type = "inpaint"
+                img_b64, mask_b64 = await asyncio.to_thread(create_inpaint_mask_and_image, img_bytes)
+                status_header = f"🎨 **Editing Background (Subject Mask Preserved):** `{clean_prompt}`"
+            else:
+                edit_type = "vary"
+                img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+                mask_b64 = None
+                status_header = f"🎨 **Editing Details / Features (Vary Subtle):** `{clean_prompt}`"
+        else:
+            edit_type = "text2img"
+            img_b64, mask_b64 = None, None
+            status_header = f"🎨 **Rendering New Image:** `{clean_prompt}` *(Note: Attach or reply to an image to edit existing images)*"
 
         # Step 2: The Hand-off
         await swap_to_vision_mode()
@@ -316,12 +327,8 @@ async def imagine(ctx, *, prompt: str = ""):
             return
 
         # Step 4: The Generation / Editing
-        if img_b64:
-            await status_msg.edit(content=f"🎨 **Inpainting New Background (Subject Mask Preserved):** `{clean_prompt if clean_prompt else 'Image Edit'}`")
-        else:
-            await status_msg.edit(content=f"🎨 **Rendering New Image:** `{clean_prompt}` *(Note: Attach or reply to an image to edit existing images)*")
-
-        image_result_bytes = await asyncio.to_thread(generate_image_sync, clean_prompt, img_b64, mask_b64, cn_type)
+        await status_msg.edit(content=status_header)
+        image_result_bytes = await asyncio.to_thread(generate_image_sync, clean_prompt, img_b64, mask_b64, edit_type)
         
         # Step 5: The Delivery
         await ctx.send(file=discord.File(fp=image_result_bytes, filename="generation.png"))
