@@ -137,40 +137,44 @@ async def extract_image_attachment(ctx):
     return None
 
 def generate_image_sync(prompt, image_b64=None, cn_type="CPDS"):
-    """Sends a JSON payload to the Fooocus API (supporting native Inpaint/Outpaint image editing) and downloads the rendered image."""
+    """Sends a JSON payload to the Fooocus API and downloads the rendered image."""
     try:
-        if image_b64 and cn_type != "ImagePrompt":
-            # Native Fooocus Inpaint / Outpaint / Background Edit endpoint
-            payload = {
-                "input_image": f"data:image/png;base64,{image_b64}",
-                "prompt": prompt if prompt else "clean high quality background",
-                "inpaint_additional_prompt": prompt,
-                "performance_selection": "Speed",
-                "require_base64": False,
-                "async_process": False
-            }
-            target_url = FOOOCUS_INPAINT_URL
-        else:
-            # Standard Text-to-Image / ControlNet Image Prompt endpoint
-            payload = {
-                "prompt": prompt if prompt else "High quality detailed image",
-                "performance_selection": "Speed",
-                "aspect_ratio": "1152×896",
-                "require_base64": False,
-                "async_process": False
-            }
-            if image_b64:
+        payload = {
+            "prompt": prompt if prompt else "High quality detailed image",
+            "performance_selection": "Speed",
+            "aspect_ratio": "1152×896",
+            "require_base64": False,
+            "async_process": False
+        }
+        
+        if image_b64:
+            if cn_type == "ImagePrompt":
                 payload["image_prompts"] = [
                     {
                         "cn_img": f"data:image/png;base64,{image_b64}",
                         "cn_stop": 0.6,
-                        "cn_weight": 0.85,
-                        "cn_type": cn_type
+                        "cn_weight": 0.8,
+                        "cn_type": "ImagePrompt"
                     }
                 ]
-            target_url = FOOOCUS_API_URL
+            else:
+                # Dual ControlNet (PyraCanny Edge + CPDS Depth) for 1:1 subject retention during editing
+                payload["image_prompts"] = [
+                    {
+                        "cn_img": f"data:image/png;base64,{image_b64}",
+                        "cn_stop": 0.9,
+                        "cn_weight": 1.0,
+                        "cn_type": "PyraCanny"
+                    },
+                    {
+                        "cn_img": f"data:image/png;base64,{image_b64}",
+                        "cn_stop": 0.9,
+                        "cn_weight": 1.0,
+                        "cn_type": "CPDS"
+                    }
+                ]
         
-        response = requests.post(target_url, json=payload, timeout=300)
+        response = requests.post(FOOOCUS_API_URL, json=payload, timeout=300)
         response.raise_for_status()
         data = response.json()
         
