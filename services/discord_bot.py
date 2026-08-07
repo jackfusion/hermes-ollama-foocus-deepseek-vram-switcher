@@ -8,6 +8,7 @@ import time
 import base64
 import re
 import rembg
+from PIL import Image, ImageOps
 from dotenv import load_dotenv
 
 # Nuke proxies to guarantee a clean pipeline to localhost
@@ -148,11 +149,49 @@ async def extract_image_attachment(ctx):
     print("[DEBUG] No image attachment found!")
     return None
 
-def generate_image_sync(prompt, image_b64=None, cn_type="CPDS"):
+def create_inpaint_mask_and_image(img_bytes):
+    """Uses rembg to create an RGBA cutout and generates an inpainting mask (white=background, black=subject)."""
+    try:
+        transparent_png = rembg.remove(img_bytes)
+        rgba_img = Image.open(io.BytesIO(transparent_png))
+        
+        # Extract alpha channel & invert so background=white(255) and subject=black(0)
+        alpha = rgba_img.split()[3]
+        mask_img = ImageOps.invert(alpha)
+        
+        # Convert RGBA to RGB for base image
+        buf_img = io.BytesIO()
+        rgba_img.convert('RGB').save(buf_img, format='PNG')
+        img_b64 = base64.b64encode(buf_img.getvalue()).decode('utf-8')
+        
+        # Save mask image to base64
+        buf_mask = io.BytesIO()
+        mask_img.save(buf_mask, format='PNG')
+        mask_b64 = base64.b64encode(buf_mask.getvalue()).decode('utf-8')
+        
+        return img_b64, mask_b64
+    except Exception as e:
+        print(f"CRITICAL Mask Creation Error: {e}")
+        raw_b64 = base64.b64encode(img_bytes).decode('utf-8')
+        return raw_b64, None
+
+def generate_image_sync(prompt, image_b64=None, mask_b64=None, cn_type="CPDS"):
     """Sends a JSON payload to the Fooocus API and downloads the rendered image."""
     try:
-        if image_b64 and cn_type != "ImagePrompt":
-            # Image Edit / Vary (Subtle) Mode: Uses Fooocus Vary (Subtle) engine to keep original subject 1:1
+        if image_b64 and mask_b64:
+            # Native Fooocus Inpainting API: Inpaints background (white mask area) while keeping subject (black mask area) 1:1
+            payload = {
+                "input_image": f"data:image/png;base64,{image_b64}",
+                "input_mask": f"data:image/png;base64,{mask_b64}",
+                "prompt": prompt if prompt else "a clean high quality background",
+                "inpaint_additional_prompt": prompt,
+                "performance_selection": "Speed",
+                "require_base64": False,
+                "async_process": False
+            }
+            target_url = FOOOCUS_INPAINT_URL
+        elif image_b64:
+            # ControlNet / Vary fallback
             payload = {
                 "input_image": image_b64,
                 "prompt": prompt if prompt else "clean high quality background",
@@ -164,7 +203,7 @@ def generate_image_sync(prompt, image_b64=None, cn_type="CPDS"):
             }
             target_url = FOOOCUS_VARY_URL
         else:
-            # Standard Text-to-Image / Style Transfer Mode
+            # Standard Text-to-Image
             payload = {
                 "prompt": prompt if prompt else "High quality detailed image",
                 "performance_selection": "Speed",
@@ -172,17 +211,8 @@ def generate_image_sync(prompt, image_b64=None, cn_type="CPDS"):
                 "require_base64": False,
                 "async_process": False
             }
-            if image_b64:
-                payload["image_prompts"] = [
-                    {
-                        "cn_img": f"data:image/png;base64,{image_b64}",
-                        "cn_stop": 0.6,
-                        "cn_weight": 0.8,
-                        "cn_type": "ImagePrompt"
-                    }
-                ]
             target_url = FOOOCUS_API_URL
-        
+
         response = requests.post(target_url, json=payload, timeout=300)
         response.raise_for_status()
         data = response.json()
@@ -260,16 +290,11 @@ async def imagine(ctx, *, prompt: str = ""):
     # Standard VRAM Juggler Generation/Editing
     status_msg = await ctx.send("🔄 **VRAM Juggler:** Clearing memory and igniting Vision Engine...")
     try:
-        # For image edits, strip old background first to create a clean subject cutout
+        # For image edits, generate base image + subject inpainting mask automatically
         if img_bytes:
-            try:
-                subject_cutout_bytes = await asyncio.to_thread(remove_background_sync, img_bytes)
-                img_b64 = base64.b64encode(subject_cutout_bytes).decode('utf-8')
-            except Exception as e:
-                print(f"[DEBUG] Background cutout failed, using raw image: {e}")
-                img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+            img_b64, mask_b64 = await asyncio.to_thread(create_inpaint_mask_and_image, img_bytes)
         else:
-            img_b64 = None
+            img_b64, mask_b64 = None, None
 
         # Clean prompt text of user filename references (e.g. 'for image generation.png')
         clean_prompt = re.sub(r'for image \S+|image \S+\.png|\S+\.png', '', prompt, flags=re.IGNORECASE).strip()
@@ -292,11 +317,11 @@ async def imagine(ctx, *, prompt: str = ""):
 
         # Step 4: The Generation / Editing
         if img_b64:
-            await status_msg.edit(content=f"🎨 **Editing Background (Subject Cutout Preserved):** `{clean_prompt if clean_prompt else 'Image Edit'}`")
+            await status_msg.edit(content=f"🎨 **Inpainting New Background (Subject Mask Preserved):** `{clean_prompt if clean_prompt else 'Image Edit'}`")
         else:
             await status_msg.edit(content=f"🎨 **Rendering New Image:** `{clean_prompt}` *(Note: Attach or reply to an image to edit existing images)*")
 
-        image_result_bytes = await asyncio.to_thread(generate_image_sync, clean_prompt, img_b64, cn_type)
+        image_result_bytes = await asyncio.to_thread(generate_image_sync, clean_prompt, img_b64, mask_b64, cn_type)
         
         # Step 5: The Delivery
         await ctx.send(file=discord.File(fp=image_result_bytes, filename="generation.png"))
