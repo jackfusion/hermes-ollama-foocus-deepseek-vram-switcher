@@ -6,6 +6,7 @@ import os
 import io
 import time
 import base64
+import re
 from dotenv import load_dotenv
 
 # Nuke proxies to guarantee a clean pipeline to localhost
@@ -116,10 +117,8 @@ async def extract_image_attachment(ctx):
     # 1. Direct Attachment on current message
     if ctx.message.attachments:
         for attachment in ctx.message.attachments:
-            if attachment.content_type and attachment.content_type.startswith("image/"):
-                return await attachment.read()
-            elif attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                return await attachment.read()
+            print(f"[DEBUG] Direct attachment found: filename={attachment.filename}, content_type={attachment.content_type}")
+            return await attachment.read()
 
     # 2. Reply Message Attachment (User replied to a message)
     if ctx.message.reference and ctx.message.reference.message_id:
@@ -127,12 +126,10 @@ async def extract_image_attachment(ctx):
             ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
             if ref_msg.attachments:
                 for attachment in ref_msg.attachments:
-                    if attachment.content_type and attachment.content_type.startswith("image/"):
-                        return await attachment.read()
-                    elif attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                        return await attachment.read()
+                    print(f"[DEBUG] Reply attachment found: filename={attachment.filename}, content_type={attachment.content_type}")
+                    return await attachment.read()
         except Exception as e:
-            print(f"Error fetching referenced message: {e}")
+            print(f"[DEBUG] Error fetching referenced message: {e}")
 
     # 3. Recent Channel History Fallback (Finds last generated/sent image in the channel)
     try:
@@ -141,13 +138,12 @@ async def extract_image_attachment(ctx):
                 continue
             if msg.attachments:
                 for attachment in msg.attachments:
-                    if attachment.content_type and attachment.content_type.startswith("image/"):
-                        return await attachment.read()
-                    elif attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                        return await attachment.read()
+                    print(f"[DEBUG] History attachment found on msg {msg.id}: filename={attachment.filename}, content_type={attachment.content_type}")
+                    return await attachment.read()
     except Exception as e:
-        print(f"Error searching channel history for image: {e}")
+        print(f"[DEBUG] Error searching channel history for image: {e}")
 
+    print("[DEBUG] No image attachment found!")
     return None
 
 def generate_image_sync(prompt, image_b64=None, cn_type="CPDS"):
@@ -239,11 +235,16 @@ async def imagine(ctx, *, prompt: str = ""):
     status_msg = await ctx.send("🔄 **VRAM Juggler:** Clearing memory and igniting Vision Engine...")
     
     try:
-        # Check for image attachment or message reply
+        # Clean prompt text of user filename references (e.g. 'for image generation.png')
+        clean_prompt = re.sub(r'for image \S+|image \S+\.png|\S+\.png', '', prompt, flags=re.IGNORECASE).strip()
+        if not clean_prompt and prompt:
+            clean_prompt = prompt
+
+        # Check for image attachment, message reply, or channel history
         img_bytes = await extract_image_attachment(ctx)
         img_b64 = base64.b64encode(img_bytes).decode('utf-8') if img_bytes else None
 
-        if not prompt and not img_b64:
+        if not clean_prompt and not img_b64:
             await status_msg.edit(content="❌ **Error:** Please provide a prompt or attach an image to edit!")
             return
 
@@ -263,11 +264,11 @@ async def imagine(ctx, *, prompt: str = ""):
 
         # Step 4: The Generation / Editing
         if img_b64:
-            await status_msg.edit(content=f"🎨 **Editing Image (Subject & Structure Preserved):** `{prompt if prompt else 'Image Edit'}`")
+            await status_msg.edit(content=f"🎨 **Editing Image (Subject & Structure Preserved):** `{clean_prompt if clean_prompt else 'Image Edit'}`")
         else:
-            await status_msg.edit(content=f"🎨 **Rendering New Image:** `{prompt}` *(Note: Attach or reply to an image to edit existing images)*")
+            await status_msg.edit(content=f"🎨 **Rendering New Image:** `{clean_prompt}` *(Note: Attach or reply to an image to edit existing images)*")
 
-        image_result_bytes = await asyncio.to_thread(generate_image_sync, prompt, img_b64, cn_type)
+        image_result_bytes = await asyncio.to_thread(generate_image_sync, clean_prompt, img_b64, cn_type)
         
         # Step 5: The Delivery
         await ctx.send(file=discord.File(fp=image_result_bytes, filename="generation.png"))
