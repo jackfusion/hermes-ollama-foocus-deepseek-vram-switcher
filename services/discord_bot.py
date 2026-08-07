@@ -112,8 +112,8 @@ async def wait_for_text_engine(timeout=30):
 # ==========================================
 
 async def extract_image_attachment(ctx):
-    """Helper to extract image bytes from direct attachments or referenced message replies."""
-    # 1. Direct Attachment
+    """Helper to extract image bytes from direct attachments, referenced message replies, or recent channel history."""
+    # 1. Direct Attachment on current message
     if ctx.message.attachments:
         for attachment in ctx.message.attachments:
             if attachment.content_type and attachment.content_type.startswith("image/"):
@@ -121,7 +121,7 @@ async def extract_image_attachment(ctx):
             elif attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
                 return await attachment.read()
 
-    # 2. Reply Message Attachment
+    # 2. Reply Message Attachment (User replied to a message)
     if ctx.message.reference and ctx.message.reference.message_id:
         try:
             ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
@@ -133,6 +133,20 @@ async def extract_image_attachment(ctx):
                         return await attachment.read()
         except Exception as e:
             print(f"Error fetching referenced message: {e}")
+
+    # 3. Recent Channel History Fallback (Finds last generated/sent image in the channel)
+    try:
+        async for msg in ctx.channel.history(limit=10):
+            if msg.id == ctx.message.id:
+                continue
+            if msg.attachments:
+                for attachment in msg.attachments:
+                    if attachment.content_type and attachment.content_type.startswith("image/"):
+                        return await attachment.read()
+                    elif attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                        return await attachment.read()
+    except Exception as e:
+        print(f"Error searching channel history for image: {e}")
 
     return None
 
