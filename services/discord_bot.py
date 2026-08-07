@@ -5,6 +5,7 @@ import asyncio
 import os
 import io
 import time
+import base64
 from dotenv import load_dotenv
 
 # Nuke proxies to guarantee a clean pipeline to localhost
@@ -109,19 +110,54 @@ async def wait_for_text_engine(timeout=30):
 # 🎨 THE REST API MODULE
 # ==========================================
 
-def generate_image_sync(prompt):
-    """Sends a clean JSON payload to the API and downloads the image into RAM."""
+async def extract_image_attachment(ctx):
+    """Helper to extract image bytes from direct attachments or referenced message replies."""
+    # 1. Direct Attachment
+    if ctx.message.attachments:
+        for attachment in ctx.message.attachments:
+            if attachment.content_type and attachment.content_type.startswith("image/"):
+                return await attachment.read()
+            elif attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                return await attachment.read()
+
+    # 2. Reply Message Attachment
+    if ctx.message.reference and ctx.message.reference.message_id:
+        try:
+            ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            if ref_msg.attachments:
+                for attachment in ref_msg.attachments:
+                    if attachment.content_type and attachment.content_type.startswith("image/"):
+                        return await attachment.read()
+                    elif attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                        return await attachment.read()
+        except Exception as e:
+            print(f"Error fetching referenced message: {e}")
+
+    return None
+
+def generate_image_sync(prompt, image_b64=None, cn_type="ImagePrompt"):
+    """Sends a JSON payload to the Fooocus API (supporting optional Image Prompt/Editing) and downloads the rendered image."""
     try:
         payload = {
-            "prompt": prompt,
+            "prompt": prompt if prompt else "High quality detailed image",
             "performance_selection": "Speed",
             "aspect_ratio": "1152×896",
             "require_base64": False,
             "async_process": False
         }
         
+        if image_b64:
+            payload["image_prompts"] = [
+                {
+                    "cn_img": f"data:image/png;base64,{image_b64}",
+                    "cn_stop": 0.6,
+                    "cn_weight": 0.8,
+                    "cn_type": cn_type
+                }
+            ]
+        
         response = requests.post(FOOOCUS_API_URL, json=payload, timeout=300)
-        response.raise_for_status() 
+        response.raise_for_status()
         data = response.json()
         
         img_url = data[0]['url']
@@ -160,12 +196,20 @@ def generate_text_sync(prompt, model="deepseek-r1:8b"):
 # 🚀 THE DISCORD COMMAND
 # ==========================================
 
-@bot.command()
-async def imagine(ctx, *, prompt: str):
+@bot.command(name="imagine", aliases=["edit", "render"])
+async def imagine(ctx, *, prompt: str = ""):
     # Step 1: Claim the request
     status_msg = await ctx.send("🔄 **VRAM Juggler:** Clearing memory and igniting Vision Engine...")
     
     try:
+        # Check for image attachment or message reply
+        img_bytes = await extract_image_attachment(ctx)
+        img_b64 = base64.b64encode(img_bytes).decode('utf-8') if img_bytes else None
+
+        if not prompt and not img_b64:
+            await status_msg.edit(content="❌ **Error:** Please provide a prompt or attach an image to edit!")
+            return
+
         # Step 2: The Hand-off
         await swap_to_vision_mode()
         
@@ -177,12 +221,16 @@ async def imagine(ctx, *, prompt: str):
             await status_msg.edit(content="❌ **Error:** Vision Engine failed to boot within 45 seconds. Check Docker logs.")
             return
 
-        # Step 4: The Generation
-        await status_msg.edit(content=f"🎨 **Rendering:** `{prompt}`")
-        image_bytes = await asyncio.to_thread(generate_image_sync, prompt)
+        # Step 4: The Generation / Editing
+        if img_b64:
+            await status_msg.edit(content=f"🎨 **Editing Image:** `{prompt if prompt else 'Image Prompt'}`")
+        else:
+            await status_msg.edit(content=f"🎨 **Rendering:** `{prompt}`")
+
+        image_result_bytes = await asyncio.to_thread(generate_image_sync, prompt, img_b64)
         
         # Step 5: The Delivery
-        await ctx.send(file=discord.File(fp=image_bytes, filename="generation.png"))
+        await ctx.send(file=discord.File(fp=image_result_bytes, filename="generation.png"))
         await status_msg.delete()
         
     except Exception as e:
