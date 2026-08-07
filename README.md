@@ -192,7 +192,7 @@ docker restart agent_hermes
 
 The Hermes Web Dashboard is exposed locally at:
 ```
-http://<YOUR_HOST_IP>:8383
+http://<YOUR_HOST_IP>:9119
 ```
 
 ---
