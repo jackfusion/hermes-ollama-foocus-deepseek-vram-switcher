@@ -18,10 +18,10 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("YOUR_DISCORD_BOT_TOKEN_HERMES_CREATIVE_DIRECTOR")
 
 # The internal routing must use the Debian Host IP!
-FOOOCUS_API_URL = "http://10.0.2.201:7865/v1/generation/text-to-image"
-FOOOCUS_HEALTH_URL = "http://10.0.2.201:7865/"
-OLLAMA_API_URL = "http://10.0.2.201:11434/api/generate"
-OLLAMA_HEALTH_URL = "http://10.0.2.201:11434/api/tags"
+FOOOCUS_API_URL = os.getenv("FOOOCUS_API_URL", "http://fooocus:7865/v1/generation/text-to-image")
+FOOOCUS_HEALTH_URL = os.getenv("FOOOCUS_HEALTH_URL", "http://fooocus:7865/")
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://10.0.2.201:11434/api/generate")
+OLLAMA_HEALTH_URL = os.getenv("OLLAMA_HEALTH_URL", "http://10.0.2.201:11434/api/tags")
 
 intents = discord.Intents.default()
 intents.message_content = True
