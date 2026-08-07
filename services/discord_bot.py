@@ -260,9 +260,9 @@ async def imagine(ctx, *, prompt: str = ""):
 
         # Step 4: The Generation / Editing
         if img_b64:
-            await status_msg.edit(content=f"🎨 **Editing Image ({cn_type} Structure Preserved):** `{prompt if prompt else 'Image Edit'}`")
+            await status_msg.edit(content=f"🎨 **Editing Image (Subject & Structure Preserved):** `{prompt if prompt else 'Image Edit'}`")
         else:
-            await status_msg.edit(content=f"🎨 **Rendering:** `{prompt}`")
+            await status_msg.edit(content=f"🎨 **Rendering New Image:** `{prompt}` *(Note: Attach or reply to an image to edit existing images)*")
 
         image_result_bytes = await asyncio.to_thread(generate_image_sync, prompt, img_b64, cn_type)
         
