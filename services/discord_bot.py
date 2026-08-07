@@ -235,8 +235,8 @@ def generate_text_sync(prompt, model="deepseek-r1:8b"):
 
 @bot.command(name="imagine", aliases=["edit", "render", "style", "nobg", "removebg"])
 async def imagine(ctx, *, prompt: str = ""):
-    # Check if this is a background removal request
-    is_nobg = ctx.invoked_with in ["nobg", "removebg"] or any(k in prompt.lower() for k in ["remove background", "remove the background", "no background", "transparent background"])
+    # Check if this is a pure background removal request (e.g. !nobg or !removebg)
+    is_nobg = ctx.invoked_with in ["nobg", "removebg"] or (prompt and prompt.lower().strip() in ["remove background", "remove the background", "no background", "transparent background"])
     
     # Check for image attachment, message reply, or channel history
     img_bytes = await extract_image_attachment(ctx)
@@ -245,7 +245,7 @@ async def imagine(ctx, *, prompt: str = ""):
         await ctx.send("❌ **Error:** Please provide a prompt or attach an image!")
         return
 
-    # Direct Background Removal via U2-Net model
+    # Direct Background Removal via U2-Net model (returns transparent PNG cutout)
     if is_nobg and img_bytes:
         status_msg = await ctx.send("✂️ **AI Background Remover:** Isolating subject & stripping background...")
         try:
@@ -260,7 +260,16 @@ async def imagine(ctx, *, prompt: str = ""):
     # Standard VRAM Juggler Generation/Editing
     status_msg = await ctx.send("🔄 **VRAM Juggler:** Clearing memory and igniting Vision Engine...")
     try:
-        img_b64 = base64.b64encode(img_bytes).decode('utf-8') if img_bytes else None
+        # For image edits, strip old background first to create a clean subject cutout
+        if img_bytes:
+            try:
+                subject_cutout_bytes = await asyncio.to_thread(remove_background_sync, img_bytes)
+                img_b64 = base64.b64encode(subject_cutout_bytes).decode('utf-8')
+            except Exception as e:
+                print(f"[DEBUG] Background cutout failed, using raw image: {e}")
+                img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+        else:
+            img_b64 = None
 
         # Clean prompt text of user filename references (e.g. 'for image generation.png')
         clean_prompt = re.sub(r'for image \S+|image \S+\.png|\S+\.png', '', prompt, flags=re.IGNORECASE).strip()
@@ -283,7 +292,7 @@ async def imagine(ctx, *, prompt: str = ""):
 
         # Step 4: The Generation / Editing
         if img_b64:
-            await status_msg.edit(content=f"🎨 **Editing Image (Subject & Structure Preserved):** `{clean_prompt if clean_prompt else 'Image Edit'}`")
+            await status_msg.edit(content=f"🎨 **Editing Background (Subject Cutout Preserved):** `{clean_prompt if clean_prompt else 'Image Edit'}`")
         else:
             await status_msg.edit(content=f"🎨 **Rendering New Image:** `{clean_prompt}` *(Note: Attach or reply to an image to edit existing images)*")
 
