@@ -7,6 +7,7 @@ import io
 import time
 import base64
 import re
+import rembg
 from dotenv import load_dotenv
 
 # Nuke proxies to guarantee a clean pipeline to localhost
@@ -199,6 +200,14 @@ def generate_image_sync(prompt, image_b64=None, cn_type="CPDS"):
         print(f"CRITICAL API Error: {e}")
         raise e
 
+def remove_background_sync(img_bytes):
+    """Uses AI U2-Net model to strip background from image bytes and return transparent PNG bytes."""
+    try:
+        return rembg.remove(img_bytes)
+    except Exception as e:
+        print(f"CRITICAL rembg Error: {e}")
+        raise e
+
 def generate_text_sync(prompt, model="deepseek-r1:8b"):
     """Sends a generate request to Ollama and returns the cleaned text response."""
     try:
@@ -224,24 +233,39 @@ def generate_text_sync(prompt, model="deepseek-r1:8b"):
 # 🚀 THE DISCORD COMMAND
 # ==========================================
 
-@bot.command(name="imagine", aliases=["edit", "render", "style"])
+@bot.command(name="imagine", aliases=["edit", "render", "style", "nobg", "removebg"])
 async def imagine(ctx, *, prompt: str = ""):
-    # Step 1: Claim the request
-    status_msg = await ctx.send("🔄 **VRAM Juggler:** Clearing memory and igniting Vision Engine...")
+    # Check if this is a background removal request
+    is_nobg = ctx.invoked_with in ["nobg", "removebg"] or any(k in prompt.lower() for k in ["remove background", "remove the background", "no background", "transparent background"])
     
+    # Check for image attachment, message reply, or channel history
+    img_bytes = await extract_image_attachment(ctx)
+
+    if not prompt and not img_bytes:
+        await ctx.send("❌ **Error:** Please provide a prompt or attach an image!")
+        return
+
+    # Direct Background Removal via U2-Net model
+    if is_nobg and img_bytes:
+        status_msg = await ctx.send("✂️ **AI Background Remover:** Isolating subject & stripping background...")
+        try:
+            transparent_png_bytes = await asyncio.to_thread(remove_background_sync, img_bytes)
+            await ctx.send(file=discord.File(fp=io.BytesIO(transparent_png_bytes), filename="background_removed.png"))
+            await status_msg.delete()
+            return
+        except Exception as e:
+            await status_msg.edit(content=f"❌ **Background Removal failed:** `{e}`")
+            return
+
+    # Standard VRAM Juggler Generation/Editing
+    status_msg = await ctx.send("🔄 **VRAM Juggler:** Clearing memory and igniting Vision Engine...")
     try:
+        img_b64 = base64.b64encode(img_bytes).decode('utf-8') if img_bytes else None
+
         # Clean prompt text of user filename references (e.g. 'for image generation.png')
         clean_prompt = re.sub(r'for image \S+|image \S+\.png|\S+\.png', '', prompt, flags=re.IGNORECASE).strip()
         if not clean_prompt and prompt:
             clean_prompt = prompt
-
-        # Check for image attachment, message reply, or channel history
-        img_bytes = await extract_image_attachment(ctx)
-        img_b64 = base64.b64encode(img_bytes).decode('utf-8') if img_bytes else None
-
-        if not clean_prompt and not img_b64:
-            await status_msg.edit(content="❌ **Error:** Please provide a prompt or attach an image to edit!")
-            return
 
         # Choose ControlNet type: 'CPDS' preserves exact structure/pose during !edit, 'ImagePrompt' transfers style
         cn_type = "ImagePrompt" if ctx.invoked_with == "style" else "CPDS"

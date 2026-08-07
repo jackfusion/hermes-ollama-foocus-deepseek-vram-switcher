@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 # Set the working directory inside the container
 WORKDIR /app
 
-# Install the lightweight network dependencies
-RUN pip install --no-cache-dir discord.py aiohttp requests python-dotenv
+# Install lightweight network & image processing dependencies
+RUN pip install --no-cache-dir discord.py aiohttp requests python-dotenv "rembg[cpu]" pillow
 
 # The command to launch the Discord client when the container boots
 CMD ["python", "discord_bot.py"]
