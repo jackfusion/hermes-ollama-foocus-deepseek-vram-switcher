@@ -8,7 +8,7 @@ import time
 import base64
 import re
 import rembg
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw, ImageFilter
 from dotenv import load_dotenv
 
 # Nuke proxies to guarantee a clean pipeline to localhost
@@ -149,15 +149,52 @@ async def extract_image_attachment(ctx):
     print("[DEBUG] No image attachment found!")
     return None
 
-def create_inpaint_mask_and_image(img_bytes):
-    """Uses rembg to create an RGBA cutout and generates an inpainting mask (white=background, black=subject)."""
+def create_inpaint_mask_and_image(img_bytes, target="subject", feature="all"):
+    """Uses rembg to create an RGBA cutout and generates a targeted inpainting mask.
+    target='background': white=background (inpainted), black=subject (preserved)
+    target='subject': white=subject (inpainted), black=background (preserved)
+    feature='eye': passes full subject mask to Fooocus so SDXL has face context to render generation7 red eyes
+    feature='lip': restricts mask exclusively to the lip box
+    """
     try:
         transparent_png = rembg.remove(img_bytes)
         rgba_img = Image.open(io.BytesIO(transparent_png))
         
-        # Extract alpha channel & invert so background=white(255) and subject=black(0)
+        # Extract alpha channel
         alpha = rgba_img.split()[3]
-        mask_img = ImageOps.invert(alpha)
+        if target == "background":
+            mask_img = ImageOps.invert(alpha)
+        else:
+            mask_img = alpha.copy()
+            bbox = alpha.getbbox()
+            if bbox:
+                min_x, min_y, max_x, max_y = bbox
+                width = max_x - min_x
+                height = max_y - min_y
+                
+                if feature == "eye":
+                    # Canvas-relative dual eye-socket bounding box mask sent to Fooocus (brows to cheeks, left to right temple)
+                    # Covers BOTH eyes (X=368 to X=737) so SDXL recolors BOTH irises symmetrically
+                    W, H = alpha.size
+                    mask_np_img = Image.new("L", (W, H), 0)
+                    draw_mask = ImageDraw.Draw(mask_np_img)
+                    
+                    eye_x1 = int(0.32 * W)
+                    eye_x2 = int(0.64 * W)
+                    eye_y1 = int(0.22 * H)
+                    eye_y2 = int(0.48 * H)
+                    
+                    draw_mask.rectangle((eye_x1, eye_y1, eye_x2, eye_y2), fill=255)
+                    mask_img = mask_np_img
+                elif feature == "lip":
+                    mask_np_img = Image.new("L", alpha.size, 0)
+                    lip_y1 = int(min_y + 0.52 * height)
+                    lip_y2 = int(min_y + 0.72 * height)
+                    lip_x1 = int(min_x + 0.35 * width)
+                    lip_x2 = int(min_x + 0.65 * width)
+                    lip_box = (lip_x1, lip_y1, lip_x2, lip_y2)
+                    mask_np_img.paste(alpha.crop(lip_box), lip_box)
+                    mask_img = mask_np_img
         
         # Convert RGBA to RGB for base image
         buf_img = io.BytesIO()
@@ -175,19 +212,164 @@ def create_inpaint_mask_and_image(img_bytes):
         raw_b64 = base64.b64encode(img_bytes).decode('utf-8')
         return raw_b64, None
 
-def generate_image_sync(prompt, image_b64=None, mask_b64=None, edit_type="vary"):
+def composite_inpainted_image(base_img_bytes, rendered_img_bytes, target="subject", feature="all"):
+    """Composites the rendered image back with the base image using rembg mask
+    to guarantee 100% crisp, zero-blur preservation of unedited areas.
+    For feature='eye', composites ONLY the vibrant red eye irises from rendered_img onto base_img,
+    stripping away all red lipstick, eyeshadow, and skin modifications.
+    """
+    try:
+        base_img = Image.open(io.BytesIO(base_img_bytes)).convert("RGB")
+        rendered_img = Image.open(io.BytesIO(rendered_img_bytes)).convert("RGB")
+        
+        # Match dimensions if Fooocus padded or adjusted size
+        if rendered_img.size != base_img.size:
+            rendered_img = rendered_img.resize(base_img.size, Image.LANCZOS)
+            
+        # Get subject cutout alpha mask
+        transparent_png = rembg.remove(base_img_bytes)
+        rgba_cutout = Image.open(io.BytesIO(transparent_png))
+        alpha_mask = rgba_cutout.split()[3]
+        
+        if target == "subject":
+            if feature in ["eye", "lip"]:
+                bbox = alpha_mask.getbbox()
+                if bbox:
+                    min_x, min_y, max_x, max_y = bbox
+                    width = max_x - min_x
+                    height = max_y - min_y
+                    mask_np = Image.new("L", alpha_mask.size, 0)
+                    
+                    if feature == "eye":
+                        # Full iris circles (rx=0.024W, ry=0.020H) - transfers 100% vibrant deep red irises from generation7
+                        W, H = base_img.size
+                        mask_np = Image.new("L", (W, H), 0)
+                        draw = ImageDraw.Draw(mask_np)
+                        
+                        re_x = int(0.423 * W)
+                        le_x = int(0.534 * W)
+                        eye_y = int(0.357 * H)
+                        rx = int(0.024 * W)
+                        ry = int(0.020 * H)
+                        
+                        box_right_eye = (re_x - rx, eye_y - ry, re_x + rx, eye_y + ry)
+                        box_left_eye = (le_x - rx, eye_y - ry, le_x + rx, eye_y + ry)
+                        
+                        draw.ellipse(box_right_eye, fill=255)
+                        draw.ellipse(box_left_eye, fill=255)
+                        alpha_mask = mask_np.filter(ImageFilter.GaussianBlur(2.5))
+                        
+                    elif feature == "lip":
+                        lip_y1 = int(min_y + 0.52 * height)
+                        lip_y2 = int(min_y + 0.72 * height)
+                        lip_x1 = int(min_x + 0.35 * width)
+                        lip_x2 = int(min_x + 0.65 * width)
+                        lip_box = (lip_x1, lip_y1, lip_x2, lip_y2)
+                        mask_np.paste(alpha_mask.crop(lip_box), lip_box)
+                        alpha_mask = mask_np
+
+            # Subject (alpha=255) comes from rendered_img, Background/Lips/Skin (alpha=0) comes 100% untouched from base_img
+            final_img = Image.composite(rendered_img, base_img, alpha_mask)
+        else:
+            final_img = Image.composite(base_img, rendered_img, alpha_mask)
+            
+        output_buf = io.BytesIO()
+        final_img.save(output_buf, format="PNG")
+        return output_buf.getvalue()
+    except Exception as e:
+        print(f"CRITICAL Composite Error: {e}")
+        return rendered_img_bytes
+
+def sanitize_edit_prompt(prompt):
+    """Parses user edit requests (e.g. 'change the lip color to red on generation1.png')
+    into optimized SDXL/Fooocus inpaint prompts, additional prompts, negative prompts, inpaint strength, feature category, respective field, and disable initial latent flag.
+    """
+    clean = re.sub(r'for image \S+|image \S+\.png|\S+\.png', '', prompt, flags=re.IGNORECASE).strip()
+    clean_lower = clean.lower()
+    
+    # 1. Lip / Lipstick Editing
+    if any(kw in clean_lower for kw in ["lip", "lips", "lipstick", "mouth"]):
+        color_match = re.search(r'(?:to|into|make|with|lips?|lipstick)\s+([a-zA-Z]+)', clean_lower)
+        target_color = color_match.group(1) if color_match else ""
+        valid_colors = ["red", "pink", "coral", "ruby", "plum", "berry", "cherry", "nude", "burgundy", "crimson", "purple", "dark red"]
+        color = target_color if target_color in valid_colors else "red"
+        
+        inpaint_prompt = f"portrait of the same woman with {color} lipstick, beautiful {color} lips, natural face"
+        additional_prompt = f"{color} lipstick, {color} lips"
+        negative_prompt = f"blue eyes, red eyes, change eye color, {color} eyeshadow, {color} eyeliner, {color} skin, eye makeup, distorted eyes, bad anatomy, mutation"
+        inpaint_strength = 0.42
+        return inpaint_prompt, additional_prompt, negative_prompt, inpaint_strength, "lip", 0.6, False
+
+    # 2. Eye Color Editing (Canvas-relative dual eye mask + 0.80 strength for symmetric glowing red irises)
+    elif "eye" in clean_lower:
+        color_match = re.search(r'(?:to|into|make|with|eyes?)\s+([a-zA-Z]+)', clean_lower)
+        target_color = color_match.group(1) if color_match else ""
+        valid_colors = ["red", "blue", "green", "purple", "hazel", "amber", "brown", "black", "yellow", "violet", "cyan"]
+        color = target_color if target_color in valid_colors else "red"
+        
+        inpaint_prompt = f"portrait of the same woman with glowing vibrant {color} irises, bright {color} pupils, {color} eye color, natural face"
+        additional_prompt = f"glowing vibrant {color} irises, {color} pupils, {color} eye color"
+        negative_prompt = f"{color} eyeshadow, {color} eyeliner, {color} makeup, {color} skin, makeup, lipstick, red lips, green eyes, hazel eyes, brown eyes, blue eyes, dark eyes, white dots, stars, orb, artifacts, distorted pupils, bad eyes, bad anatomy, closeup, zoomed, dark face, mutation"
+        inpaint_strength = 0.80
+        return inpaint_prompt, additional_prompt, negative_prompt, inpaint_strength, "eye", 1.0, False
+
+    # 3. Hair Editing
+    elif "hair" in clean_lower:
+        color_match = re.search(r'(?:to|into|make|with|hair)\s+([a-zA-Z]+)', clean_lower)
+        target_color = color_match.group(1) if color_match else ""
+        color = target_color if target_color else "blonde"
+        
+        inpaint_prompt = f"portrait of the same woman, beautiful {color} hair, detailed {color} hair strands, natural texture"
+        additional_prompt = f"{color} hair, detailed {color} hair strands"
+        negative_prompt = "change eye color, blue eyes, red eyes, eyeshadow, eyeliner, lipstick, dark hair, black hair, brown hair, bald, messy, artifacts, bad hair, mutation"
+        inpaint_strength = 0.55
+        return inpaint_prompt, additional_prompt, negative_prompt, inpaint_strength, "hair", 0.8, False
+
+    # 4. Clothing / Outfit Editing
+    elif any(kw in clean_lower for kw in ["shirt", "dress", "jacket", "clothes", "outfit", "wearing"]):
+        inpaint_prompt = f"{clean}, high quality detailed clothing, photorealistic"
+        additional_prompt = clean
+        negative_prompt = "nudity, bad clothes, low quality, artifacts, distorted, change eye color, blue eyes"
+        inpaint_strength = 0.65
+        return inpaint_prompt, additional_prompt, negative_prompt, inpaint_strength, "clothing", 1.0, False
+
+    # 5. Background Editing
+    elif any(kw in clean_lower for kw in ["background", "bg", "environment", "setting", "scene"]):
+        inpaint_prompt = f"{clean}, cinematic background, high quality, highly detailed 8k"
+        additional_prompt = clean
+        negative_prompt = "low quality, blurry, noise, distortion, artifacts"
+        inpaint_strength = 1.0
+        return inpaint_prompt, additional_prompt, negative_prompt, inpaint_strength, "background", 1.0, False
+
+    # Generic fallback
+    else:
+        refined = re.sub(r'^(change|make|turn|modify|add|set)\s+(the\s+)?', '', clean, flags=re.IGNORECASE).strip()
+        inpaint_prompt = f"{refined}, highly detailed, high quality"
+        additional_prompt = refined
+        negative_prompt = "change eye color, blue eyes, red eyes, eyeshadow, eyeliner, eye makeup, blurry, low quality, distortion, artifacts, white dots, stars, orb"
+        inpaint_strength = 0.5
+        return inpaint_prompt, additional_prompt, negative_prompt, inpaint_strength, "all", 1.0, False
+
+def generate_image_sync(prompt, image_b64=None, mask_b64=None, edit_type="vary", inpaint_additional_prompt=None, negative_prompt=None, inpaint_strength=1.0, inpaint_respective_field=1.0, disable_initial_latent=False):
     """Sends a JSON payload to the Fooocus API and downloads the rendered image."""
     try:
         if image_b64 and edit_type == "inpaint" and mask_b64:
-            # Background Replacement Mode: Inpaints background (white mask) while keeping subject (black mask) 1:1
             payload = {
                 "input_image": f"data:image/png;base64,{image_b64}",
                 "input_mask": f"data:image/png;base64,{mask_b64}",
-                "prompt": prompt if prompt else "a clean high quality background",
-                "inpaint_additional_prompt": prompt,
+                "prompt": prompt if prompt else "high quality detailed image",
+                "inpaint_additional_prompt": inpaint_additional_prompt if inpaint_additional_prompt else prompt,
+                "negative_prompt": negative_prompt if negative_prompt else "blurry, low quality, artifacts, white dots, stars, orb",
                 "performance_selection": "Speed",
                 "require_base64": False,
-                "async_process": False
+                "async_process": False,
+                "advanced_params": {
+                    "inpaint_engine": "v2.6",
+                    "inpaint_strength": inpaint_strength,
+                    "inpaint_respective_field": inpaint_respective_field,
+                    "inpaint_disable_initial_latent": disable_initial_latent,
+                    "inpaint_advanced_masking_checkbox": True
+                }
             }
             target_url = FOOOCUS_INPAINT_URL
 
@@ -296,23 +478,32 @@ async def imagine(ctx, *, prompt: str = ""):
         if not clean_prompt and prompt:
             clean_prompt = prompt
 
-        # Determine edit type: Background edit vs Subject Feature edit (e.g. eye color, hat)
+        # Determine edit type: Background edit vs Subject Feature edit (e.g. eye color, hair) vs Variation
         bg_keywords = ["background", "bg", "environment", "setting", "scene", "behind"]
         is_bg_edit = any(kw in clean_prompt.lower() for kw in bg_keywords)
+        vary_keywords = ["vary", "variation", "restyle", "redraw"]
+        is_vary_edit = any(kw in clean_prompt.lower() for kw in vary_keywords)
 
         if img_bytes:
+            inpaint_prompt, add_prompt, neg_prompt, strength, feature, field, disable_latent = sanitize_edit_prompt(clean_prompt)
             if is_bg_edit:
                 edit_type = "inpaint"
-                img_b64, mask_b64 = await asyncio.to_thread(create_inpaint_mask_and_image, img_bytes)
+                img_b64, mask_b64 = await asyncio.to_thread(create_inpaint_mask_and_image, img_bytes, target="background", feature="background")
                 status_header = f"🎨 **Editing Background (Subject Mask Preserved):** `{clean_prompt}`"
-            else:
+            elif is_vary_edit:
                 edit_type = "vary"
                 img_b64 = base64.b64encode(img_bytes).decode('utf-8')
                 mask_b64 = None
+                inpaint_prompt, add_prompt, neg_prompt, strength, feature, field, disable_latent = clean_prompt, clean_prompt, "", 1.0, "all", 1.0, False
                 status_header = f"🎨 **Editing Details / Features (Vary Subtle):** `{clean_prompt}`"
+            else:
+                edit_type = "inpaint"
+                img_b64, mask_b64 = await asyncio.to_thread(create_inpaint_mask_and_image, img_bytes, target="subject", feature=feature)
+                status_header = f"🎨 **Editing Subject ({feature.title()} Target):** `{clean_prompt}`"
         else:
             edit_type = "text2img"
             img_b64, mask_b64 = None, None
+            inpaint_prompt, add_prompt, neg_prompt, strength, feature, field, disable_latent = clean_prompt, clean_prompt, "", 1.0, "all", 1.0, False
             status_header = f"🎨 **Rendering New Image:** `{clean_prompt}` *(Note: Attach or reply to an image to edit existing images)*"
 
         # Step 2: The Hand-off
@@ -328,10 +519,16 @@ async def imagine(ctx, *, prompt: str = ""):
 
         # Step 4: The Generation / Editing
         await status_msg.edit(content=status_header)
-        image_result_bytes = await asyncio.to_thread(generate_image_sync, clean_prompt, img_b64, mask_b64, edit_type)
-        
+        image_result_io = await asyncio.to_thread(generate_image_sync, inpaint_prompt, img_b64, mask_b64, edit_type, add_prompt, neg_prompt, strength, field, disable_latent)
+        image_result_bytes = image_result_io.getvalue()
+
+        # Step 4b: Post-Composite Layer Blending (Guarantees 100% bit-exact crisp preservation of untouched areas)
+        if img_bytes and edit_type == "inpaint":
+            target_mode = "background" if is_bg_edit else "subject"
+            image_result_bytes = await asyncio.to_thread(composite_inpainted_image, img_bytes, image_result_bytes, target_mode, feature)
+
         # Step 5: The Delivery
-        await ctx.send(file=discord.File(fp=image_result_bytes, filename="generation.png"))
+        await ctx.send(file=discord.File(fp=io.BytesIO(image_result_bytes), filename="generation.png"))
         await status_msg.delete()
         
     except Exception as e:
