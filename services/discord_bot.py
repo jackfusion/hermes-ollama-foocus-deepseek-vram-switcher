@@ -22,8 +22,8 @@ DISCORD_TOKEN = os.getenv("YOUR_DISCORD_BOT_TOKEN_HERMES_CREATIVE_DIRECTOR")
 
 # The internal routing must use the Debian Host IP!
 FOOOCUS_API_URL = os.getenv("FOOOCUS_API_URL", "http://fooocus:7865/v1/generation/text-to-image")
-FOOOCUS_VARY_URL = os.getenv("FOOOCUS_VARY_URL", "http://fooocus:7865/v2/generation/image-upscale-vary")
-FOOOCUS_INPAINT_URL = os.getenv("FOOOCUS_INPAINT_URL", "http://fooocus:7865/v2/generation/image-inpaint-outpaint")
+FOOOCUS_VARY_URL = os.getenv("FOOOCUS_VARY_URL", "http://fooocus:7865/v1/generation/image-upscale-vary")
+FOOOCUS_INPAINT_URL = os.getenv("FOOOCUS_INPAINT_URL", "http://fooocus:7865/v1/generation/image-inpaint-outpaint")
 FOOOCUS_HEALTH_URL = os.getenv("FOOOCUS_HEALTH_URL", "http://fooocus:7865/")
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://10.0.2.201:11434/api/generate")
 OLLAMA_HEALTH_URL = os.getenv("OLLAMA_HEALTH_URL", "http://10.0.2.201:11434/api/tags")
@@ -355,11 +355,12 @@ def generate_image_sync(prompt, image_b64=None, mask_b64=None, edit_type="vary",
     try:
         if image_b64 and edit_type == "inpaint" and mask_b64:
             payload = {
-                "input_image": f"data:image/png;base64,{image_b64}",
-                "input_mask": f"data:image/png;base64,{mask_b64}",
+                "input_image": image_b64,
+                "input_mask": mask_b64,
                 "prompt": prompt if prompt else "high quality detailed image",
                 "inpaint_additional_prompt": inpaint_additional_prompt if inpaint_additional_prompt else prompt,
                 "negative_prompt": negative_prompt if negative_prompt else "blurry, low quality, artifacts, white dots, stars, orb",
+                "style_selections": ["Fooocus V2", "Fooocus Enhance", "Fooocus Sharp"],
                 "performance_selection": "Speed",
                 "require_base64": False,
                 "async_process": False,
@@ -379,6 +380,7 @@ def generate_image_sync(prompt, image_b64=None, mask_b64=None, edit_type="vary",
                 "input_image": image_b64,
                 "prompt": prompt if prompt else "High quality detailed image",
                 "uov_method": "Vary (Subtle)",
+                "style_selections": ["Fooocus V2", "Fooocus Enhance", "Fooocus Sharp"],
                 "performance_selection": "Speed",
                 "require_base64": False,
                 "async_process": False
@@ -388,15 +390,20 @@ def generate_image_sync(prompt, image_b64=None, mask_b64=None, edit_type="vary",
         else:
             # Standard Text-to-Image Generation
             payload = {
-                "prompt": prompt if prompt else "High quality detailed image",
+                "prompt": prompt if prompt else "High quality detailed masterpiece, photorealistic, 8k",
+                "negative_prompt": negative_prompt if negative_prompt else "blurry, low quality, bad anatomy, distorted, malformed, bad eyes, disfigured, text, watermark",
+                "style_selections": ["Fooocus V2", "Fooocus Enhance", "Fooocus Sharp"],
                 "performance_selection": "Speed",
-                "aspect_ratio": "1152×896",
+                "aspect_ratios_selection": "1152*896",
+                "image_number": 1,
                 "require_base64": False,
                 "async_process": False
             }
             target_url = FOOOCUS_API_URL
 
         response = requests.post(target_url, json=payload, timeout=300)
+        if response.status_code != 200:
+            print(f"CRITICAL Fooocus API Error [{response.status_code}]: {response.text}")
         response.raise_for_status()
         data = response.json()
         
