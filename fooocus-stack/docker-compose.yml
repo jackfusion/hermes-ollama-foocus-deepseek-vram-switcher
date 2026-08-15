@@ -28,7 +28,7 @@ services:
 
   discord_bot:
     build: 
-      context: /mnt/media/docker/compose/debian-llm/llm/services
+      context: ../services
       dockerfile: Dockerfile.bot
     container_name: hermes_creative_director
     restart: unless-stopped
@@ -39,5 +39,5 @@ services:
     env_file:
       - .env
     volumes:
-      - /mnt/media/docker/compose/debian-llm/llm/services:/app
+      - ../services:/app
       - /var/run/docker.sock:/var/run/docker.sock
